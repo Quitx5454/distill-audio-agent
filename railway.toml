@@ -1,0 +1,10 @@
+# Railway deploy config for Distill Audio.
+# Build from the Dockerfile (Bun + ffmpeg) — avoids Nixpacks/Railpack provider
+# quirks (the Nixpacks default tried to install EOL Node 18 and failed).
+[build]
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "bun run start"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3

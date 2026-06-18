@@ -1,0 +1,9 @@
+node_modules/
+.env
+.DS_Store
+dist/
+*.log
+
+# Generated audio + deliverables — produced by the pipeline, not source.
+deliverables/*.mp3
+deliverables/*.wav
