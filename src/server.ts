@@ -1,12 +1,15 @@
-// ── Distill Audio — x402 HTTP server ──────────────────────────────────────
-// Wraps the pipeline behind a single paid endpoint:
+// ── Distill Audio — x402 HTTP server (async) ───────────────────────────────
+// Generation can exceed the platform's ~100s HTTP edge timeout (topic research
+// + TTS + ASMR), so /generate is ASYNC, mirroring the Pipeline agent:
 //
-//   POST /generate   { brief, asmr? }   →  audio/mpeg  (2.00 USDC, Base Mainnet)
+//   POST /generate              { brief, asmr? }  → 202 { task_id, status }   (2.00 USDC; payment settles HERE)
+//   GET  /generate/status/:id                     → { status, ... }            (FREE — poll)
+//   GET  /generate/result/:id                     → audio/mpeg                 (FREE — once completed)
 //
-// Pure Express (not Lucid): the response body is a binary mp3, which Lucid's
-// JSON-envelope entrypoints can't carry. The x402 paywall is the SAME stack
-// Refine uses — @x402/express paymentMiddleware backed by the Coinbase CDP
-// facilitator, plus the Bazaar discovery extension so CDP indexes the resource.
+// Pure Express (not Lucid). The x402 paywall is the SAME stack Refine uses —
+// @x402/express paymentMiddleware + Coinbase CDP facilitator + Bazaar discovery.
+// Settling on the immediate 202 means the wallet is charged up front; the caller
+// then polls status and fetches the mp3 (stateful, in-memory, TTL — see jobs.ts).
 import express from "express";
 import { paymentMiddleware } from "@x402/express";
 import { x402ResourceServer, HTTPFacilitatorClient } from "@x402/core/server";
@@ -21,6 +24,7 @@ import agentCard from "../agent-card.json" with { type: "json" };
 import { runPipeline } from "./pipeline.js";
 import { isAsmrOption, type AsmrOption } from "./lib/asmr.js";
 import { parseEnvelope, wrapResponse } from "./lib/envelope.js";
+import { createJob, getJob, updateJob } from "./lib/jobs.js";
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 const PAY_TO = (process.env.PAYMENTS_RECEIVABLE_ADDRESS ??
@@ -29,6 +33,10 @@ const PRICE = "$2.00";
 const ROUTE = "/generate";
 // Internal safety check only — the fixed price already covers cost.
 const COST_WARN_THRESHOLD_USD = 1.0;
+// DEV ONLY. When "1", skip the x402 paywall so the async flow can be exercised
+// locally without a real payment. NEVER set in production — free generation is a
+// direct cost leak. Defaults to the paywall being ON.
+const PAYWALL_DISABLED = process.env.X402_DISABLE_PAYWALL === "1";
 
 const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
 const elevenLabsApiKey = process.env.ELEVENLABS_API_KEY;
@@ -112,7 +120,7 @@ app.use((_req: any, res: any, next: any) => {
             accepts: (decoded.accepts ?? []).map((a: any) => ({
               scheme: a.scheme, network: a.network, asset: a.asset, payTo: a.payTo,
               maxAmountRequired: a.amount ?? a.maxAmountRequired, maxTimeoutSeconds: a.maxTimeoutSeconds,
-              resource: resourceUrl, description: resourceDesc, mimeType: a.mimeType ?? "audio/mpeg",
+              resource: resourceUrl, description: resourceDesc, mimeType: a.mimeType ?? "application/json",
               input: { method: "POST", type: "http", bodyType: "json" },
             })),
           });
@@ -124,11 +132,11 @@ app.use((_req: any, res: any, next: any) => {
   next();
 });
 
-// ── x402 paywall on /generate ──────────────────────────────────────────────
-app.use(paymentMiddleware({
+// ── x402 paywall on /generate (skippable in dev via X402_DISABLE_PAYWALL) ───
+const paywall = paymentMiddleware({
   [ROUTE]: {
     accepts: [{ scheme: "exact", price: PRICE, network: "eip155:8453", payTo: PAY_TO }],
-    description: "Generate a warm narration/explainer mp3 from a script or topic, with an optional ASMR background layer.",
+    description: "Generate a warm narration/explainer mp3 from a script or topic, optional ASMR layer. Async: returns a task_id immediately; poll /generate/status/{id}, then fetch the mp3 from /generate/result/{id}.",
     extensions: declareDiscoveryExtension({
       bodyType: "json",
       input: { brief: "How do I get off zero and build a daily habit?", asmr: "rain" },
@@ -146,13 +154,36 @@ app.use(paymentMiddleware({
         required: ["brief"],
         additionalProperties: false,
       },
-      output: { example: "<binary audio/mpeg>", schema: { type: "string", contentMediaType: "audio/mpeg" } },
+      output: {
+        example: {
+          task_id: "8a3d…uuid",
+          status: "queued",
+          status_url: "/generate/status/8a3d…uuid",
+          result_url: "/generate/result/8a3d…uuid",
+        },
+        schema: {
+          type: "object",
+          properties: {
+            task_id: { type: "string", description: "Poll /generate/status/{task_id}; fetch the mp3 from /generate/result/{task_id} once status is completed." },
+            status: { type: "string", enum: ["queued", "running", "completed", "failed"] },
+            status_url: { type: "string" },
+            result_url: { type: "string" },
+          },
+          required: ["task_id", "status"],
+        },
+      },
     }),
   },
-}, resourceServer));
+}, resourceServer);
+if (PAYWALL_DISABLED) {
+  console.warn("⚠️  X402_DISABLE_PAYWALL=1 — PAYWALL OFF (dev only). /generate is FREE. Never set this in production.");
+} else {
+  app.use(paywall);
+}
 
-// ── Handler (runs only after payment settles) ──────────────────────────────
-app.post(ROUTE, express.json({ limit: "2mb" }), async (req, res) => {
+// ── POST /generate — paid. Validates, queues a job, returns 202 with a
+//    task_id. Payment settles on THIS fast response; generation runs after. ───
+app.post(ROUTE, express.json({ limit: "2mb" }), (req, res) => {
   const { payload, sessionId, agentId } = parseEnvelope<{ brief?: unknown; asmr?: unknown }>(req.body);
 
   const brief = payload?.brief;
@@ -168,16 +199,31 @@ app.post(ROUTE, express.json({ limit: "2mb" }), async (req, res) => {
     }
     asmr = payload.asmr;
   }
-
   if (!anthropicApiKey || !elevenLabsApiKey) {
     return res.status(500).json(wrapResponse({ error: "Server is missing ANTHROPIC_API_KEY or ELEVENLABS_API_KEY." }, sessionId, agentId, "error"));
   }
 
-  const outputPath = join(tmpdir(), `distill-audio-${sessionId}.mp3`);
+  // Queue + fire-and-forget. Returning 202 quickly keeps payment settlement well
+  // inside the edge timeout; the render runs in processJob and is polled.
+  const job = createJob(sessionId, asmr);
+  void processJob(job.id, brief, asmr);
+
+  return res.status(202).json({
+    task_id: job.id,
+    status: job.status,
+    status_url: `${ROUTE}/status/${job.id}`,
+    result_url: `${ROUTE}/result/${job.id}`,
+  });
+});
+
+// Background generation. Never throws to a caller — failures land on the job.
+async function processJob(id: string, brief: string, asmr: AsmrOption | null) {
+  updateJob(id, { status: "running" });
+  const outputPath = join(tmpdir(), `distill-audio-${id}.mp3`);
   try {
     const result = await runPipeline(brief, {
-      anthropicApiKey,
-      elevenLabsApiKey,
+      anthropicApiKey: anthropicApiKey!,
+      elevenLabsApiKey: elevenLabsApiKey!,
       voice: process.env.ELEVENLABS_VOICE_ID,
       modelId: process.env.ELEVENLABS_MODEL_ID,
       freeTierCredits: process.env.FREE_TIER_CREDITS ? Number(process.env.FREE_TIER_CREDITS) : undefined,
@@ -186,26 +232,62 @@ app.post(ROUTE, express.json({ limit: "2mb" }), async (req, res) => {
       asmr,
       costWarnThresholdUsd: COST_WARN_THRESHOLD_USD,
     });
-
     const o = result.output;
     if (!o.render) {
-      return res.status(500).json(wrapResponse({ error: "Render did not produce a file." }, sessionId, agentId, "error"));
+      updateJob(id, { status: "failed", error: "Render did not produce a file." });
+      return;
     }
-
     const bytes = await readFile(outputPath);
-    res.setHeader("X-Distill-Session-Id", result.session_id);
-    res.setHeader("X-Distill-Mode", o.spec.mode);
-    res.setHeader("X-Distill-Voice", o.render.voice_name);
-    res.setHeader("X-Distill-Asmr", o.render.asmr ? o.render.asmr.option : "none");
-    res.setHeader("X-Distill-Asmr-Applied", String(o.render.asmr?.applied ?? false));
-    res.type("audio/mpeg").send(bytes);
+    updateJob(id, {
+      status: "completed",
+      bytes,
+      mode: o.spec.mode,
+      voice: o.render.voice_name,
+      asmrApplied: o.render.asmr?.applied ?? false,
+    });
   } catch (err) {
-    console.error("[generate] error:", err);
-    return res.status(500).json(wrapResponse(
-      { error: err instanceof Error ? err.message : "Generation failed." }, sessionId, agentId, "error"));
+    console.error(`[generate] job ${id} error:`, err);
+    updateJob(id, { status: "failed", error: err instanceof Error ? err.message : "Generation failed." });
   } finally {
     await rm(outputPath, { force: true }).catch(() => {});
   }
+}
+
+// ── GET /generate/status/:id — FREE. Poll until completed/failed. ───────────
+app.get(`${ROUTE}/status/:id`, (req, res) => {
+  const job = getJob(req.params.id);
+  if (!job) return res.status(404).json({ error: "Unknown or expired task_id." });
+  const body: Record<string, unknown> = {
+    task_id: job.id,
+    status: job.status,
+    asmr: job.asmr ?? "none",
+  };
+  if (job.status === "completed") {
+    body.mode = job.mode;
+    body.voice = job.voice;
+    body.asmr_applied = job.asmrApplied;
+    body.result_url = `${ROUTE}/result/${job.id}`;
+  }
+  if (job.status === "failed") body.error = job.error;
+  res.json(body);
+});
+
+// ── GET /generate/result/:id — FREE. The mp3 once completed. ─────────────────
+app.get(`${ROUTE}/result/:id`, (req, res) => {
+  const job = getJob(req.params.id);
+  if (!job) return res.status(404).json({ error: "Unknown or expired task_id." });
+  if (job.status === "failed") {
+    return res.status(500).json({ task_id: job.id, status: job.status, error: job.error ?? "Generation failed." });
+  }
+  if (job.status !== "completed" || !job.bytes) {
+    return res.status(409).json({ task_id: job.id, status: job.status, error: "Not ready — poll status until completed." });
+  }
+  res.setHeader("X-Distill-Session-Id", job.sessionId);
+  res.setHeader("X-Distill-Mode", job.mode ?? "");
+  res.setHeader("X-Distill-Voice", job.voice ?? "");
+  res.setHeader("X-Distill-Asmr", job.asmr ?? "none");
+  res.setHeader("X-Distill-Asmr-Applied", String(job.asmrApplied ?? false));
+  res.type("audio/mpeg").send(Buffer.from(job.bytes));
 });
 
 app.listen(PORT, () => {

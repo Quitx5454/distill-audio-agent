@@ -2,7 +2,7 @@
   "type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
   "protocolVersion": "1.0",
   "name": "Distill Audio",
-  "description": "Narration and explainer audio agent. Accepts a script or topic, returns a high-quality mp3. Optional ASMR background layer available. Callable via x402 on Base Mainnet.",
+  "description": "Narration and explainer audio agent. Accepts a script or topic, returns a high-quality mp3. Optional ASMR background layer available. Callable via x402 on Base Mainnet. Async: the paid call returns a task_id immediately; poll the free status endpoint, then fetch the mp3 from the free result endpoint.",
   "version": "1.0.0",
   "url": "https://distill-audio-agent-production.up.railway.app",
   "provider": {
@@ -14,7 +14,22 @@
       "name": "generate",
       "url": "https://distill-audio-agent-production.up.railway.app/generate",
       "method": "POST",
-      "protocolBinding": "HTTP+JSON"
+      "protocolBinding": "HTTP+JSON",
+      "description": "Paid (2.00 USDC). Returns 202 { task_id, status, status_url, result_url } immediately."
+    },
+    {
+      "name": "status",
+      "url": "https://distill-audio-agent-production.up.railway.app/generate/status/{task_id}",
+      "method": "GET",
+      "protocolBinding": "HTTP+JSON",
+      "description": "Free. Poll until status is completed or failed."
+    },
+    {
+      "name": "result",
+      "url": "https://distill-audio-agent-production.up.railway.app/generate/result/{task_id}",
+      "method": "GET",
+      "protocolBinding": "HTTP+JSON",
+      "description": "Free. Returns the audio/mpeg once status is completed (409 while pending)."
     }
   ],
   "capabilities": {
@@ -84,8 +99,8 @@
           "maxAmountRequired": "2000000",
           "maxTimeoutSeconds": 120,
           "resource": "https://distill-audio-agent-production.up.railway.app/generate",
-          "description": "Generate a warm narration/explainer mp3 from a script or topic, with an optional ASMR background layer.",
-          "mimeType": "audio/mpeg"
+          "description": "Generate a warm narration/explainer mp3 from a script or topic, optional ASMR layer. Async: returns a task_id; poll status, then fetch the mp3.",
+          "mimeType": "application/json"
         }
       ]
     }
