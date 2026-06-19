@@ -1,16 +1,16 @@
 // ── Topic research → sourced script (Mode 2) ──────────────────────────────
 // When the brief gives only a topic, this writes the script ourselves. Runs on
-// Haiku 4.5 with the server-side web_search tool (search + summarize doesn't
-// need Sonnet-level reasoning, and Haiku is ~3× cheaper, which also caps the
-// blast radius per search cycle). The model researches, verifies specifics, and
-// returns a finished narration script plus a per-claim sources block.
-// NOTE: Haiku 4.5 does not support adaptive thinking or the effort param — see
-// the create() call below.
+// Sonnet 4.6 with the server-side web_search tool and adaptive thinking. The
+// model researches, verifies specifics, and returns a finished narration script
+// plus a per-claim sources block — the same quality bar as a hand-written one.
+// (Haiku was trialled here for cost but its output was noticeably weaker —
+// process-chatter leaked into the script, inconsistent voice, weak length
+// calibration. The search cap below, not the model, was the cost fix.)
 import Anthropic from "@anthropic-ai/sdk";
 import type { AudioSpec, ScriptResult } from "../types.js";
 import { researchSystemPrompt } from "../prompts/research.js";
 
-const RESEARCH_MODEL = "claude-haiku-4-5";
+const RESEARCH_MODEL = "claude-sonnet-4-6";
 // Hard cap on web searches PER request. A short narration brief needs only a
 // few fact-checks (simple queries use 1–3). Without this the server-side
 // web_search tool is UNCAPPED — a single call can fire dozens of searches, then
@@ -45,22 +45,12 @@ export async function researchScript(
   let calls = 0;
   for (let i = 0; i < MAX_CONTINUATIONS; i++) {
     calls++;
-    // Haiku 4.5 does NOT support adaptive thinking or the effort param (Models
-    // API: thinking.adaptive=false, effort.supported=false) — sending either
-    // 400s. Run it plain: search + write, no extended thinking.
     const response = await client.messages.create({
       model: RESEARCH_MODEL,
       max_tokens: 16000,
-      // allowed_callers: ["direct"] — web_search_20260209 defaults to requiring
-      // programmatic tool calling (for dynamic filtering, which needs the
-      // code-execution tool we don't enable). Haiku 4.5 doesn't support PTC, so
-      // force direct invocation; basic search works, no dynamic filtering.
-      tools: [{
-        type: "web_search_20260209",
-        name: "web_search",
-        max_uses: WEB_SEARCH_MAX_USES,
-        allowed_callers: ["direct"],
-      }],
+      thinking: { type: "adaptive" },
+      output_config: { effort: "high" },
+      tools: [{ type: "web_search_20260209", name: "web_search", max_uses: WEB_SEARCH_MAX_USES }],
       system,
       messages,
     });
