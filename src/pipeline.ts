@@ -69,7 +69,10 @@ export async function runPipeline(
   opts: PipelineOptions,
 ): Promise<DistillResponse<PipelineOutput>> {
   const sessionId = crypto.randomUUID();
-  const client = new Anthropic({ apiKey: opts.anthropicApiKey });
+  // maxRetries: 1 (SDK default is 2). The research step runs the server-side
+  // web_search tool; a silent SDK retry on a transient error re-runs every
+  // search already performed in that call, multiplying cost. Keep retries low.
+  const client = new Anthropic({ apiKey: opts.anthropicApiKey, maxRetries: 1 });
   const modelId = opts.modelId ?? DEFAULT_MODEL_ID;
 
   // 1. Brief → structured spec (handles messy NL, sets the mode).

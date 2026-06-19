@@ -1,14 +1,28 @@
 // ── Topic research → sourced script (Mode 2) ──────────────────────────────
 // When the brief gives only a topic, this writes the script ourselves. Runs on
-// Sonnet 4.6 with the server-side web_search tool and adaptive thinking. The
-// model researches, verifies specifics, and returns a finished narration script
-// plus a per-claim sources block — the same quality bar as a hand-written one.
+// Haiku 4.5 with the server-side web_search tool (search + summarize doesn't
+// need Sonnet-level reasoning, and Haiku is ~3× cheaper, which also caps the
+// blast radius per search cycle). The model researches, verifies specifics, and
+// returns a finished narration script plus a per-claim sources block.
+// NOTE: Haiku 4.5 does not support adaptive thinking or the effort param — see
+// the create() call below.
 import Anthropic from "@anthropic-ai/sdk";
 import type { AudioSpec, ScriptResult } from "../types.js";
 import { researchSystemPrompt } from "../prompts/research.js";
 
-const RESEARCH_MODEL = "claude-sonnet-4-6";
-const MAX_CONTINUATIONS = 6; // bound the server-side web-search loop
+const RESEARCH_MODEL = "claude-haiku-4-5";
+// Hard cap on web searches PER request. A short narration brief needs only a
+// few fact-checks (simple queries use 1–3). Without this the server-side
+// web_search tool is UNCAPPED — a single call can fire dozens of searches, then
+// re-fire them on every pause_turn continuation and every silent SDK retry.
+// Exceeding the cap returns a max_uses_exceeded tool error and the model stops
+// searching, so this bounds total searches per request.
+const WEB_SEARCH_MAX_USES = 5;
+// Continuation cap for the pause_turn resume loop. This bounds API round-trips,
+// NOT searches (max_uses does that). With max_uses=5 < the server loop's
+// 10-iteration pause threshold, the model stops searching and ends the turn
+// well before this — so 3 is ample for finishing a paused turn (was 6).
+const MAX_CONTINUATIONS = 3;
 
 export async function researchScript(
   client: Anthropic,
@@ -27,18 +41,29 @@ export async function researchScript(
   ];
 
   let finalText = "";
+  let totalSearches = 0;
+  let calls = 0;
   for (let i = 0; i < MAX_CONTINUATIONS; i++) {
+    calls++;
+    // Haiku 4.5 does NOT support adaptive thinking or the effort param (Models
+    // API: thinking.adaptive=false, effort.supported=false) — sending either
+    // 400s. Run it plain: search + write, no extended thinking.
     const response = await client.messages.create({
       model: RESEARCH_MODEL,
       max_tokens: 16000,
-      thinking: { type: "adaptive" },
-      output_config: { effort: "high" },
-      tools: [{ type: "web_search_20260209", name: "web_search" }],
+      tools: [{ type: "web_search_20260209", name: "web_search", max_uses: WEB_SEARCH_MAX_USES }],
       system,
       messages,
     });
 
-    // Server-side tool loop hit its iteration cap — resume by re-sending.
+    // The API reports billed searches in usage.server_tool_use.web_search_requests
+    // (one per search). Accumulate across continuations for real per-request visibility.
+    const used =
+      (response.usage as { server_tool_use?: { web_search_requests?: number } })
+        .server_tool_use?.web_search_requests ?? 0;
+    totalSearches += used;
+
+    // Server-side tool loop paused mid-work — resume by re-sending.
     if (response.stop_reason === "pause_turn") {
       messages.push({ role: "assistant", content: response.content });
       continue;
@@ -55,6 +80,13 @@ export async function researchScript(
     }
     break;
   }
+
+  // Visibility going forward — so search volume shows up in logs, not just the
+  // billing dashboard.
+  console.log(
+    `[research] web_search_requests=${totalSearches} across ${calls} model call(s) ` +
+      `(max_uses=${WEB_SEARCH_MAX_USES}/call, continuation cap=${MAX_CONTINUATIONS})`,
+  );
 
   if (!finalText) {
     throw new Error("Research step produced no script text.");
