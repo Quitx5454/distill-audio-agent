@@ -51,7 +51,16 @@ export async function researchScript(
     const response = await client.messages.create({
       model: RESEARCH_MODEL,
       max_tokens: 16000,
-      tools: [{ type: "web_search_20260209", name: "web_search", max_uses: WEB_SEARCH_MAX_USES }],
+      // allowed_callers: ["direct"] — web_search_20260209 defaults to requiring
+      // programmatic tool calling (for dynamic filtering, which needs the
+      // code-execution tool we don't enable). Haiku 4.5 doesn't support PTC, so
+      // force direct invocation; basic search works, no dynamic filtering.
+      tools: [{
+        type: "web_search_20260209",
+        name: "web_search",
+        max_uses: WEB_SEARCH_MAX_USES,
+        allowed_callers: ["direct"],
+      }],
       system,
       messages,
     });
