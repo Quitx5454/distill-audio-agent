@@ -30,10 +30,17 @@ All output is wrapped in the Distill Standard Envelope.
 Deployed on Railway, callable via x402 on Base Mainnet:
 
 - **URL:** https://distill-audio-agent-production.up.railway.app
+- **Repo:** https://github.com/Quitx5454/distill-audio-agent
 - **Endpoint:** `POST /generate` → returns `audio/mpeg` (or a Distill envelope error)
 - **Body:** `{ "brief": "<script or topic>", "asmr": "rain" | … | null }`
 - **Price:** flat **2.00 USDC** per request (any mode, with or without ASMR) · payTo `0x104b5768…388A` · agentId 54502
 - Stack: pure Express + `@x402/express` (CDP facilitator) + Bazaar discovery extension. Public `/.well-known/agent-card.json`. ffmpeg ships in the Docker image.
+
+## Public presence
+
+- **Showcase:** listed alongside Refine on the Distill site — https://quitx5454.github.io/pulse (two equal-weight agent cards; in-browser x402 "Test Distill Audio" plays the returned mp3). Docs: `pulse/docs/distill-audio.md`.
+- **Hermes profile:** https://github.com/Quitx5454/distill-audio-hermes-profile — one-command install (`hermes profile install github.com/Quitx5454/distill-audio-hermes-profile --alias`) for an agent that calls Distill Audio via x402 (bundles the `distill-audio-x402` skill + reference client).
+- **CDP x402 Bazaar:** discovery extension is live in the 402, but CDP indexes a resource only **after a payment settles on-chain** to its https URL. Until the first real 2.00 USDC settlement, Distill Audio is NOT in the catalog (Refine got listed the same way — via a settled payment).
 
 ## Quality rules (non-negotiable)
 

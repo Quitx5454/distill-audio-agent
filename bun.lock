@@ -11,7 +11,9 @@
         "@x402/evm": "^2.15.0",
         "@x402/express": "^2.15.0",
         "@x402/extensions": "^2.15.0",
+        "@x402/fetch": "^2.15.0",
         "express": "^5.2.1",
+        "viem": "^2.52.2",
         "zod": "^4.1.12",
       },
       "devDependencies": {
@@ -157,6 +159,8 @@
     "@x402/express": ["@x402/express@2.15.0", "", { "dependencies": { "@x402/core": "~2.15.0", "@x402/extensions": "~2.15.0" }, "peerDependencies": { "@x402/paywall": "^2.15.0", "express": "^4.0.0 || ^5.0.0" }, "optionalPeers": ["@x402/paywall"] }, "sha512-xtAwXKpbf3nMvLq7cwyowFmzQdmrg1oFAql9+RukjzXmzyPKQD8Fd4+elOus4sz24f7wK6dDXYZNNhBEzBVrBw=="],
 
     "@x402/extensions": ["@x402/extensions@2.15.0", "", { "dependencies": { "@noble/curves": "^1.9.0", "@scure/base": "^1.2.6", "@signinwithethereum/siwe": "^4.1.0", "@x402/core": "~2.15.0", "ajv": "^8.17.1", "jose": "^5.9.6", "tweetnacl": "^1.0.3", "viem": "^2.48.11", "zod": "^3.24.2" } }, "sha512-Rbk4P6NDO/ahUP+qNTgEs+u2NoinKWeOb8vbjnUr5ekm/9l2VZ5UNSgNjgMmPgWx5Kr1Oq14mpUAkTIfn+/sew=="],
+
+    "@x402/fetch": ["@x402/fetch@2.15.0", "", { "dependencies": { "@x402/core": "~2.15.0" } }, "sha512-kugdE8zsIa4NV4lgjORbBmb3IuKFd6IpIqR32vIVl8T2aiyG7YWo6C+r5GLa7Dyn6EdXMpqtni90B4QJ/bf4QA=="],
 
     "abitype": ["abitype@1.0.6", "", { "peerDependencies": { "typescript": ">=5.0.4", "zod": "^3 >=3.22.0" }, "optionalPeers": ["typescript", "zod"] }, "sha512-MMSqYh4+C/aVqI2RQaWqbvI4Kxo5cQV40WQ4QFtDnNzCkqChm8MuENhElmynZlO0qUy/ObkEUaXtKqYnx1Kp3A=="],
 
